@@ -7,15 +7,11 @@ use std::time::Duration;
 use futures::{Future, Sink, Stream};
 use log::{debug, error, info, warn};
 
-#[macro_use]
-mod utils;
-mod args;
-mod bot;
-mod gerrit;
-mod spark;
-mod sqs;
+use gerritbot::bot;
+use gerritbot::gerrit;
+use gerritbot::spark::{self, SparkClient};
 
-use spark::SparkClient;
+mod args;
 
 fn spark_client_from_config(spark_config: args::SparkConfig) -> Rc<dyn SparkClient> {
     match spark_config.output_mode {

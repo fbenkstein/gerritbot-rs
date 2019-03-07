@@ -420,6 +420,21 @@ pub fn fetch_patch_set(
     Ok(complete_change.current_patch_set)
 }
 
+#[derive(Debug, Clone)]
+pub struct Gerrit {
+}
+
+impl Gerrit {
+    pub fn new(_host: String, _username: String, _priv_key_path: PathBuf) -> Result<Gerrit, String> {
+        unimplemented!()
+    }
+
+    pub fn events(self) -> impl Stream<Item=Event, Error=()> {
+        let (_sender, receiver) = channel(1);
+        receiver
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::{get_pub_key_path, PathBuf};

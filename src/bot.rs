@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 
 use crate::gerrit;
-use crate::spark;
+use crate::chat;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Filter {
@@ -34,9 +34,9 @@ impl Filter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct User {
-    spark_person_id: spark::PersonId,
+    spark_person_id: chat::PersonId,
     /// email of the user; assumed to be the same in Spark and Gerrit
-    email: spark::Email,
+    email: chat::Email,
     enabled: bool,
     filter: Option<Filter>,
 }
@@ -561,28 +561,28 @@ impl Bot {
 
 #[derive(Debug)]
 pub enum Action {
-    Enable(spark::PersonId, spark::Email),
-    Disable(spark::PersonId, spark::Email),
+    Enable(chat::PersonId, chat::Email),
+    Disable(chat::PersonId, chat::Email),
     UpdateApprovals(Box<gerrit::Event>),
-    Help(spark::PersonId),
-    Unknown(spark::PersonId),
-    Status(spark::PersonId),
-    FilterStatus(spark::PersonId),
-    FilterAdd(spark::PersonId, String /* filter */),
-    FilterEnable(spark::PersonId),
-    FilterDisable(spark::PersonId),
+    Help(chat::PersonId),
+    Unknown(chat::PersonId),
+    Status(chat::PersonId),
+    FilterStatus(chat::PersonId),
+    FilterAdd(chat::PersonId, String /* filter */),
+    FilterEnable(chat::PersonId),
+    FilterDisable(chat::PersonId),
     ReviewerAdded(Box<gerrit::Event>),
-    ChangeFetched(spark::PersonId, String /* message */, gerrit::Change),
+    ChangeFetched(chat::PersonId, String /* message */, gerrit::Change),
 }
 
 #[derive(Debug)]
 pub struct Response {
-    pub person_id: spark::PersonId,
+    pub person_id: chat::PersonId,
     pub message: String,
 }
 
 impl Response {
-    pub fn new<A>(person_id: spark::PersonId, message: A) -> Response
+    pub fn new<A>(person_id: chat::PersonId, message: A) -> Response
     where
         A: Into<String>,
     {

@@ -87,12 +87,6 @@ fn delete_with_token(url: &str, token: &str) -> Result<hyper::client::Response, 
 // Spark data model
 //
 
-/// Spark id of the user
-pub type PersonId = String;
-
-/// Email of the user
-pub type Email = String;
-
 /// Webhook's post request from Spark API
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]

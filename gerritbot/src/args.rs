@@ -45,7 +45,6 @@ pub enum ModeConfig {
 pub struct BotConfig {
     pub msg_expiration: u64,
     pub msg_capacity: usize,
-    pub format_script: Option<String>,
 }
 
 const USAGE: &str = "

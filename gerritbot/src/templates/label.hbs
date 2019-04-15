@@ -1,0 +1,9 @@
+{{~#if (streq type "WaitForVerification")}}
+⌛ {{~ value}} ({{type}})
+{{~else~}}{{~#if (gt approval_number 0)}}
+👍 +{{~ value}} ({{type}})
+{{~else}}{{~#if (eq approval_number 0)}}
+📝 {{~ value}} ({{type}})
+{{~else~}}
+👎 -{{~ value}} ({{type}})
+{{~/if~}}{{~/if~}}{{~/if~}}

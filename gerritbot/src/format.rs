@@ -1,6 +1,10 @@
-use itertools::Itertools as _;
+use std::path::Path;
 
+use handlebars::{handlebars_helper, Handlebars};
+use itertools::Itertools as _;
+use lazy_static::lazy_static;
 use rlua::{Function as LuaFunction, Lua};
+use serde::Serialize;
 
 use gerritbot_gerrit as gerrit;
 
@@ -39,6 +43,33 @@ fn check_format_script_syntax(script_source: &str) -> Result<(), String> {
     })
 }
 
+macro_rules! register_template {
+    ($handlebars:expr, $relative_path:literal) => {
+        let name = Path::new($relative_path)
+            .file_stem()
+            .unwrap()
+            .to_string_lossy();
+        let data = include_str!($relative_path);
+        $handlebars
+            .register_template_string(&name, data)
+            .unwrap_or_else(|e| panic!("failed to compile template {:?}: {}", $relative_path, e));
+    };
+}
+
+lazy_static! {
+    static ref HANDLEBARS: Handlebars = {
+        let mut h = Handlebars::new();
+        h.set_strict_mode(true);
+        h.register_escape_fn(handlebars::no_escape);
+        h.source_map_enabled(true);
+        handlebars_helper!(streq: |s1: str, s2: str| s1 == s2);
+        h.register_helper("streq", Box::new(streq));
+        register_template!(h, "templates/approval.hbs");
+        register_template!(h, "templates/label.hbs");
+        h
+    };
+}
+
 impl Formatter {
     pub fn format_approval(
         &self,
@@ -73,7 +104,7 @@ impl Formatter {
         }
 
         let lua = Lua::new();
-        lua.context(|context| -> Result<String, String> {
+        let lua_string = lua.context(|context| -> Result<String, String> {
             let globals = context.globals();
             context
                 .load(&self.format_script)
@@ -87,7 +118,36 @@ impl Formatter {
 
             f.call::<_, String>(lua_event)
                 .map_err(|err| format!("lua formatting function failed: {}", err))
-        })
+        })?;
+
+        #[derive(Serialize, Debug)]
+        struct Context<'event, 'approval, 'change> {
+            event: &'event gerrit::CommentAddedEvent,
+            change: &'change gerrit::Change,
+            approval: &'approval gerrit::Approval,
+            approval_number: i64,
+            is_human: bool,
+        }
+
+        let handlebars_string = {
+            let mut s = HANDLEBARS
+                .render(
+                    "approval",
+                    &Context {
+                        event,
+                        change: &event.change,
+                        approval,
+                        approval_number: approval.value.parse().unwrap_or(0),
+                        is_human,
+                    },
+                )
+                .map_err(|e| format!("handlebars formatting failed: {}", e))?;
+            s.truncate(s.trim_end().len());
+            s
+        };
+
+        assert_eq!(lua_string, handlebars_string);
+        Ok(lua_string)
     }
 
     pub fn format_reviewer_added(
@@ -215,11 +275,7 @@ mod test {
     #[test]
     fn test_format_approval() {
         let event = get_event();
-        let res = Formatter::default().format_approval(
-            &event,
-            &event.approvals[0],
-            true,
-        );
+        let res = Formatter::default().format_approval(&event, &event.approvals[0], true);
         assert_eq!(
             res,
             Ok("[Some review.](http://localhost/42) (demo-project) 👍 +2 (Code-Review) from approver\n\n> Just a buggy script. FAILURE<br>\n> And more problems. FAILURE".to_string())
@@ -230,11 +286,7 @@ mod test {
     fn format_approval_filters_specific_messages() {
         let mut event = get_event();
         event.approvals[0].approval_type = String::from("Some new type");
-        let res = Formatter::default().format_approval(
-            &event,
-            &event.approvals[0],
-            true,
-        );
+        let res = Formatter::default().format_approval(&event, &event.approvals[0], true);
         assert_eq!(res.map(|s| s.is_empty()), Ok(true));
     }
 

@@ -65,21 +65,14 @@ fn main() {
         spark: spark_config,
     } = args::parse_config(args.config);
 
-    // load or create a new bot
-    let bot_state = bot::State::load("state.json")
-        .map(|state| {
-            info!(
-                "Loaded bot from 'state.json' with {} user(s).",
-                state.num_users()
-            );
-            state
-        })
-        .unwrap_or_else(|err| {
-            warn!("Could not load bot from 'state.json': {:?}", err);
-            bot::State::new()
-        });
+    // diesel::sqlite::SqliteConnection::establish("gerritbot.db")
 
-    let bot_builder = bot::Builder::new(bot_state);
+    let db = bot::open_db("gerritbot.db").unwrap_or_else(|e| {
+        error!("failed to open DB: {}", e);
+        std::process::exit(1);
+    });
+
+    let bot_builder = bot::Builder::new(db);
     let bot_builder = {
         if bot_config.msg_expiration != 0 && bot_config.msg_capacity != 0 {
             debug!(

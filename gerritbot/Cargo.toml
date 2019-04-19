@@ -6,6 +6,7 @@ license = "MIT/Apache-2.0"
 edition = "2018"
 
 [dependencies]
+diesel = { version = "1.4.0", default-features = false, features = ["sqlite"] }
 futures = "0.1"
 gerritbot-gerrit = { path = "../gerritbot-gerrit" }
 gerritbot-spark = { path = "../gerritbot-spark" }
@@ -22,6 +23,10 @@ shellexpand = "0.1"
 stderrlog = "0.4"
 structopt = "0.2"
 tokio = "0.1"
+
+[dependencies.libsqlite3-sys]
+version = ">=0.8.0"
+features = ["bundled"]
 
 [build-dependencies]
 vergen = "3.0"

@@ -1,11 +1,14 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::convert;
 use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+#[macro_use]
+extern crate diesel;
+
+use diesel::{connection::Connection as _, sqlite::SqliteConnection};
 use futures::{future::Future, stream::Stream};
 use lazy_static::lazy_static;
 use log::{debug, error, warn};
@@ -17,10 +20,13 @@ use gerritbot_spark as spark;
 
 pub mod args;
 mod format;
+mod models;
 mod rate_limit;
+mod schema;
 
 use format::Formatter;
 pub use format::DEFAULT_FORMAT_SCRIPT;
+use models::User;
 use rate_limit::RateLimiter;
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,26 +39,6 @@ impl Filter {
     pub fn new<A: Into<String>>(regex: A) -> Self {
         Self {
             regex: regex.into(),
-            enabled: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct User {
-    spark_person_id: spark::PersonId,
-    /// email of the user; assumed to be the same in Spark and Gerrit
-    email: spark::Email,
-    enabled: bool,
-    filter: Option<Filter>,
-}
-
-impl User {
-    fn new(person_id: spark::PersonId, email: spark::Email) -> Self {
-        Self {
-            spark_person_id: person_id,
-            email: email,
-            filter: None,
             enabled: true,
         }
     }
@@ -82,13 +68,8 @@ pub struct Bot<G = gerrit::CommandRunner, S = spark::Client> {
     spark_client: S,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
-    users: Vec<User>,
-    #[serde(skip_serializing, skip_deserializing)]
-    person_id_index: HashMap<spark::PersonId, usize>,
-    #[serde(skip_serializing, skip_deserializing)]
-    email_index: HashMap<spark::Email, usize>,
+    db: SqliteConnection,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -97,7 +78,6 @@ struct MsgCacheParameters {
     expiration: Duration,
 }
 
-#[derive(Default)]
 pub struct Builder {
     state: State,
     rate_limiter: RateLimiter,
@@ -130,88 +110,39 @@ pub enum AddFilterResult {
     FilterNotConfigured,
 }
 
+pub fn open_db(database_url: &str) -> diesel::ConnectionResult<SqliteConnection> {
+    SqliteConnection::establish(database_url)
+}
+
 impl State {
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    pub fn load<P>(filename: P) -> Result<Self, BotError>
-    where
-        P: AsRef<Path>,
-    {
-        let f = File::open(filename)?;
-
-        serde_json::from_reader(f)
-            .map(|mut state: Self| {
-                state.index_users();
-                state
-            })
-            .map_err(BotError::from)
-    }
-
-    fn index_users(&mut self) {
-        for (user_pos, user) in self.users.iter().enumerate() {
-            self.person_id_index
-                .insert(user.spark_person_id.clone(), user_pos);
-            self.email_index.insert(user.email.clone(), user_pos);
-        }
+    pub fn new(db: SqliteConnection) -> Self {
+        Self { db }
     }
 
     pub fn num_users(&self) -> usize {
-        self.users.len()
+        unimplemented!()
     }
 
     // Note: This method is not idempotent, and in particular, when adding the same user twice,
     // it will completely mess up the indexes.
-    fn add_user<'a>(
-        &'a mut self,
-        person_id: &spark::PersonIdRef,
-        email: &spark::EmailRef,
-    ) -> &'a mut User {
-        let user_pos = self.users.len();
-        self.users
-            .push(User::new(person_id.to_owned(), email.to_owned()));
-        self.person_id_index.insert(person_id.to_owned(), user_pos);
-        self.email_index.insert(email.to_owned(), user_pos);
-        self.users.last_mut().unwrap()
+    fn add_user<'a>(&mut self, person_id: &spark::PersonIdRef, email: &spark::EmailRef) -> User {
+        unimplemented!()
     }
 
     fn find_or_add_user_by_person_id<'a>(
-        &'a mut self,
+        &mut self,
         person_id: &spark::PersonIdRef,
         email: &spark::EmailRef,
-    ) -> &'a mut User {
-        let pos = self
-            .users
-            .iter()
-            .position(|u| u.spark_person_id == person_id);
-        let user: &'a mut User = match pos {
-            Some(pos) => &mut self.users[pos],
-            None => self.add_user(person_id, email),
-        };
-        user
+    ) -> User {
+        unimplemented!()
     }
 
-    fn find_user_mut<'a, P: ?Sized>(&'a mut self, person_id: &P) -> Option<&'a mut User>
+    fn find_user<'a, P: ?Sized>(&'a self, person_id: &P) -> Option<User>
     where
         spark::PersonId: std::borrow::Borrow<P>,
         P: std::hash::Hash + Eq,
     {
-        self.person_id_index
-            .get(person_id)
-            .cloned()
-            .map(move |pos| &mut self.users[pos])
-    }
-
-    fn find_user<'a, P: ?Sized>(&'a self, person_id: &P) -> Option<&'a User>
-    where
-        spark::PersonId: std::borrow::Borrow<P>,
-        P: std::hash::Hash + Eq,
-    {
-        self.person_id_index
-            .get(person_id)
-            .cloned()
-            .map(|pos| &self.users[pos])
+        unimplemented!()
     }
 
     fn enable<'a>(
@@ -219,10 +150,8 @@ impl State {
         person_id: &spark::PersonIdRef,
         email: &spark::EmailRef,
         enabled: bool,
-    ) -> &'a User {
-        let user: &'a mut User = self.find_or_add_user_by_person_id(person_id, email);
-        user.enabled = enabled;
-        user
+    ) -> User {
+        unimplemented!()
     }
 
     pub fn add_filter<A>(
@@ -233,33 +162,14 @@ impl State {
     where
         A: Into<String>,
     {
-        let user = self.find_user_mut(person_id);
-        match user {
-            Some(user) => {
-                if !user.enabled {
-                    Err(AddFilterResult::UserDisabled)
-                } else {
-                    let filter: String = filter.into();
-                    if Regex::new(&filter).is_err() {
-                        return Err(AddFilterResult::InvalidFilter);
-                    }
-                    user.filter = Some(Filter::new(filter));
-                    Ok(())
-                }
-            }
-            None => Err(AddFilterResult::UserNotFound),
-        }
+        unimplemented!()
     }
 
     pub fn get_filter<'a>(
         &'a self,
         person_id: &spark::PersonIdRef,
     ) -> Result<Option<&'a Filter>, AddFilterResult> {
-        let user = self.find_user(person_id);
-        match user {
-            Some(user) => Ok(user.filter.as_ref()),
-            None => Err(AddFilterResult::UserNotFound),
-        }
+        unimplemented!()
     }
 
     pub fn enable_filter(
@@ -267,51 +177,20 @@ impl State {
         person_id: &spark::PersonIdRef,
         enabled: bool,
     ) -> Result<String /* filter */, AddFilterResult> {
-        let user = self.find_user_mut(person_id);
-        match user {
-            Some(user) => {
-                if !user.enabled {
-                    Err(AddFilterResult::UserDisabled)
-                } else {
-                    match user.filter.as_mut() {
-                        Some(filter) => {
-                            if Regex::new(&filter.regex).is_err() {
-                                return Err(AddFilterResult::InvalidFilter);
-                            }
-                            filter.enabled = enabled;
-                            Ok(filter.regex.clone())
-                        }
-                        None => Err(AddFilterResult::FilterNotConfigured),
-                    }
-                }
-            }
-            None => Err(AddFilterResult::UserNotFound),
-        }
+        unimplemented!()
     }
 
     fn is_filtered(&self, user_pos: usize, msg: &str) -> bool {
-        let user = &self.users[user_pos];
-        if let Some(filter) = user.filter.as_ref() {
-            if filter.enabled {
-                if let Ok(re) = Regex::new(&filter.regex) {
-                    return re.is_match(msg);
-                } else {
-                    warn!(
-                        "User {} has configured invalid filter regex: {}",
-                        user.spark_person_id, filter.regex
-                    );
-                }
-            }
-        }
-        false
+        unimplemented!()
     }
 }
 
 impl Builder {
-    pub fn new(state: State) -> Self {
+    pub fn new(db: SqliteConnection) -> Self {
         Self {
-            state,
-            ..Default::default()
+            state: State::new(db),
+            formatter: Default::default(),
+            rate_limiter: Default::default(),
         }
     }
 

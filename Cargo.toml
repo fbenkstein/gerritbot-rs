@@ -4,3 +4,6 @@ members = [
   "gerritbot-gerrit",
   "gerritbot-spark",
 ]
+
+# [patch.crates-io]
+# bitflags = { git = "https://github.com/bitflags/bitflags.git" }

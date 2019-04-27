@@ -22,7 +22,7 @@ use format::Formatter;
 pub use format::DEFAULT_FORMAT_SCRIPT;
 use rate_limit::RateLimiter;
 pub use state::State;
-use state::{AddFilterResult, User};
+use state::{AddFilterResult, User, UserFlag};
 
 pub trait GerritCommandRunner {}
 
@@ -226,8 +226,7 @@ where
             Action::Version(email) => Some(Task::Reply(Response::new(email, VERSION_MSG))),
         Action::Unknown(email) => Some(Task::Reply(Response::new(email, GREETINGS_MSG))),
         Action::Status(email) => {
-            let status = self.status_for(&email);
-            Some(Task::Reply(Response::new(email, status)))
+            self.status_for(&email).map(|status| Task::Reply(Response::new(email, status)))
         }
         Action::FilterStatus(email) => {
             let resp: String = match self.state.get_filter(&email) {
@@ -379,11 +378,11 @@ where
         }
         let owner_email = spark::EmailRef::new(change.owner.email.as_ref()?);
 
-        // try to find the use and check it is enabled
+        // try to find the user
         let user = self
             .state
             .find_user_by_email(owner_email)
-            .filter(|user| user.enabled)?;
+            .filter(|user| user.any_review_notifications_enabled())?;
 
         let is_human = !approver.to_lowercase().contains("bot");
 
@@ -414,7 +413,7 @@ where
         let user = self
             .state
             .find_user_by_email(reviewer_email)
-            .filter(|user| user.enabled)?;
+            .filter(|user| user.has_flag(UserFlag::NotifyReviewerAdded))?;
 
         // filter all messages that were already sent to the user recently
         if self.rate_limiter.limit(user, event) {
@@ -436,23 +435,20 @@ where
         Ok(())
     }
 
-    pub fn status_for(&self, email: &spark::EmailRef) -> String {
+    pub fn status_for(&self, email: &spark::EmailRef) -> Option<String> {
         let user = self.state.find_user(email);
-        let enabled = user.map_or(false, |u| u.enabled);
-        let enabled_user_count =
-            self.state.users().filter(|u| u.enabled).count() - if enabled { 1 } else { 0 };
-        format!(
-            "Notifications for you are **{}**. I am notifying {}.",
-            if enabled { "enabled" } else { "disabled" },
-            match (enabled, enabled_user_count) {
-                (false, 0) => format!("no users"),
-                (true, 0) => format!("no other users"),
-                (false, 1) => format!("one user"),
-                (true, 1) => format!("another user"),
-                (false, _) => format!("{} users", enabled_user_count),
-                (true, _) => format!("another {} users", enabled_user_count),
-            }
-        )
+        let enabled = user.map_or(false, User::any_notifications_enabled);
+        let enabled_user_count = self
+            .state
+            .users()
+            .filter(|u| User::any_notifications_enabled(u))
+            .count()
+            - if enabled { 1 } else { 0 };
+
+        self.formatter
+            .format_status(user, enabled_user_count)
+            .map_err(|e| error!("status formatting failed: {}", e))
+            .ok()
     }
 }
 
@@ -608,7 +604,7 @@ mod test {
         }
 
         fn is_enabled(&mut self) {
-            if !self.subject.enabled {
+            if !self.subject.any_notifications_enabled() {
                 spectral::AssertionFailure::from_spec(self)
                     .with_expected("user is enabled".to_string())
                     .with_actual("it is not".to_string())
@@ -617,7 +613,7 @@ mod test {
         }
 
         fn is_not_enabled(&mut self) {
-            if self.subject.enabled {
+            if self.subject.any_notifications_enabled() {
                 spectral::AssertionFailure::from_spec(self)
                     .with_expected("user is not enabled".to_string())
                     .with_actual("it is".to_string())
@@ -678,13 +674,13 @@ mod test {
 
             test "enabled status response" {
                 let resp = bot.status_for(EmailRef::new("some@example.com"));
-                assert_that!(resp).contains("enabled");
+                assert_that!(resp).is_some().contains("enabled");
             }
 
             test "disabled status response" {
                 bot.enable("some@example.com", false);
                 let resp = bot.status_for(EmailRef::new("some@example.com"));
-                assert_that!(resp).contains("disabled");
+                assert_that!(resp).is_some().contains("disabled");
             }
 
             test "existing user can be enabled" {
@@ -693,7 +689,7 @@ mod test {
                 assert_that!(users)
                     .has_item_matching(
                         |u| u.email == EmailRef::new("some@example.com")
-                            && u.enabled);
+                            && u.any_notifications_enabled());
                 assert_that!(bot.state.users().count()).is_equal_to(1);
             }
 
@@ -703,7 +699,7 @@ mod test {
                 assert_that!(users)
                     .has_item_matching(
                         |u| u.email == EmailRef::new("some@example.com")
-                            && !u.enabled);
+                            && !u.any_notifications_enabled());
                 assert_that!(bot.state.users().count()).is_equal_to(1);
             }
         }
@@ -716,8 +712,7 @@ mod test {
             assert_that!(users)
                 .has_item_matching(
                     |u| u.email == EmailRef::new("some@example.com")
-
-                        && u.enabled);
+                        && u.any_notifications_enabled());
             assert_that!(bot.state.users().count()).is_equal_to(1);
         }
 
@@ -729,13 +724,13 @@ mod test {
             assert_that!(users)
                 .has_item_matching(
                     |u| u.email == EmailRef::new("some@example.com")
-                        && !u.enabled);
+                        && !u.any_notifications_enabled());
             assert_that!(bot.state.users().count()).is_equal_to(1);
         }
 
         test "unknown user gets disabled status response" {
             let resp = bot.status_for(EmailRef::new("some_non_existent_id"));
-            assert!(resp.contains("disabled"));
+            assert!(resp.unwrap().contains("disabled"));
         }
     }
 

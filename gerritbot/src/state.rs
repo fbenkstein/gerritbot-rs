@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
+use bitflags::bitflags;
 use log::warn;
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +36,121 @@ impl Filter {
     }
 }
 
+#[derive(Copy, Clone, Serialize, Deserialize, PartialEq, Eq, FromPrimitive)]
+#[serde(rename_all = "snake_case")]
+pub enum UserFlag {
+    /// User wants notification messages for reviews with approvals.
+    NotifyReviewApprovals = 0,
+    /// User wants notification messages for review comments without approvals.
+    NotifyReviewComments,
+    /// User wants notification messages for reviews with inline comments.
+    NotifyReviewInlineComments,
+    /// User wants notification messages when added as reviewer to a change.
+    NotifyReviewerAdded,
+}
+
+impl UserFlag {
+    const fn to_flags(self) -> UserFlags {
+        UserFlags {
+            bits: 1 << self as usize,
+        }
+    }
+}
+
+impl Into<UserFlags> for UserFlag {
+    fn into(self) -> UserFlags {
+        self.to_flags()
+    }
+}
+
+bitflags! {
+    struct UserFlags: u16 {
+        /// Notification marker for users that haven't specified which
+        /// notifications they want. This is useful for backwards compatibility
+        /// in the configuration (i.e. translating `true` to this value) and for
+        /// being able to change the default and have it apply also to existing
+        /// users.
+        const DEFAULT_NOTIFICATIONS_MARKER  = 1 << 15;
+
+        /// Default flags used when the user hasn't set any custom flags.
+        const DEFAULT_NOTIFICATIONS = UserFlag::NotifyReviewApprovals.to_flags().bits
+            | UserFlag::NotifyReviewInlineComments.to_flags().bits
+            | UserFlag::NotifyReviewerAdded.to_flags().bits;
+
+        /// All notification flags for reviews.
+        const NOTIFY_ALL_REVIEW = UserFlag::NotifyReviewApprovals.to_flags().bits
+            | UserFlag::NotifyReviewComments.to_flags().bits
+            | UserFlag::NotifyReviewInlineComments.to_flags().bits;
+
+        /// All notificaton flags.
+        const NOTIFY_ALL_NOTIFICATIONS = Self::NOTIFY_ALL_REVIEW.bits
+            | UserFlag::NotifyReviewerAdded.to_flags().bits;
+    }
+}
+
+impl Iterator for UserFlags {
+    type Item = UserFlag;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.contains(Self::DEFAULT_NOTIFICATIONS_MARKER) {
+            self.remove(Self::DEFAULT_NOTIFICATIONS_MARKER);
+            self.insert(Self::DEFAULT_NOTIFICATIONS);
+        }
+
+        while self.bits != 0 {
+            let lowest_bit = self.bits.trailing_zeros() + 1;
+            let lowest_bit_flags = UserFlags {
+                bits: 1 << lowest_bit,
+            };
+            self.remove(lowest_bit_flags);
+            let flag = UserFlag::from_u32(lowest_bit);
+
+            if flag.is_some() {
+                return flag;
+            }
+        }
+
+        None
+    }
+}
+
+impl UserFlags {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if *self == Self::DEFAULT_NOTIFICATIONS_MARKER {
+            serializer.serialize_bool(true)
+        } else if self.is_empty() {
+            serializer.serialize_bool(false)
+        } else {
+            serializer.collect_seq(*self)
+        }
+    }
+
+    fn deserialize<'de, D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        match value {
+            serde_json::Value::Bool(true) => Ok(Self::DEFAULT_NOTIFICATIONS_MARKER),
+            serde_json::Value::Bool(false) => Ok(Self::empty()),
+            _ => {
+                use serde::de::Error as _;
+
+                let flags =
+                    serde_json::from_value::<Vec<UserFlag>>(value).map_err(D::Error::custom)?;
+
+                Ok(flags
+                    .into_iter()
+                    .fold(Self::empty(), |flags, flag| flags | flag.into()))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     // Legacy attribute.  Keep so we don't drop it on deserialize, serialize.
@@ -41,7 +159,12 @@ pub struct User {
     spark_person_id: Option<String>,
     /// email of the user; assumed to be the same in Spark and Gerrit
     pub email: spark::Email,
-    pub enabled: bool,
+    #[serde(
+        rename = "enabled",
+        serialize_with = "UserFlags::serialize",
+        deserialize_with = "UserFlags::deserialize"
+    )]
+    flags: UserFlags,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<Filter>,
 }
@@ -52,8 +175,27 @@ impl User {
             spark_person_id: None,
             email: email,
             filter: None,
-            enabled: true,
+            flags: UserFlags::DEFAULT_NOTIFICATIONS_MARKER,
         }
+    }
+
+    pub fn any_notifications_enabled(&self) -> bool {
+        self.has_any_flag(UserFlags::NOTIFY_ALL_NOTIFICATIONS)
+    }
+
+    pub fn any_review_notifications_enabled(&self) -> bool {
+        self.has_any_flag(UserFlags::NOTIFY_ALL_REVIEW)
+    }
+
+    /// Are any of the given user flags set?
+    fn has_any_flag(&self, flags: UserFlags) -> bool {
+        assert!(flags.bits.count_ones() > 0);
+        self.flags.intersects(flags)
+    }
+
+    /// Is the given user flag set?
+    pub fn has_flag(&self, flag: UserFlag) -> bool {
+        self.has_any_flag(flag.into())
     }
 }
 
@@ -143,7 +285,7 @@ impl State {
 
     pub fn enable<'a>(&'a mut self, email: &spark::EmailRef, enabled: bool) -> &'a User {
         let user: &'a mut User = self.find_or_add_user_by_email(email);
-        user.enabled = enabled;
+        user.flags.insert(UserFlags::DEFAULT_NOTIFICATIONS_MARKER);
         user
     }
 
@@ -158,7 +300,7 @@ impl State {
         let user = self.find_user_mut(email);
         match user {
             Some(user) => {
-                if !user.enabled {
+                if !user.any_notifications_enabled() {
                     Err(AddFilterResult::UserDisabled)
                 } else {
                     let filter: String = filter.into();
@@ -192,7 +334,7 @@ impl State {
         let user = self.find_user_mut(email);
         match user {
             Some(user) => {
-                if !user.enabled {
+                if !user.any_notifications_enabled() {
                     Err(AddFilterResult::UserDisabled)
                 } else {
                     match user.filter.as_mut() {
@@ -357,7 +499,7 @@ mod test {
     fn add_valid_filter_for_disabled_user() {
         let mut state = State::new();
         state.add_user(EmailRef::new("some@example.com"));
-        state.users[0].enabled = false;
+        state.enable(EmailRef::new("some@example.com"), false);
 
         let res = state.add_filter(EmailRef::new("some@example.com"), ".*some_word.*");
         assert_eq!(res, Err(AddFilterResult::UserDisabled));

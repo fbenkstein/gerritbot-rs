@@ -8,6 +8,8 @@ use serde_json::Value as JsonValue;
 
 use gerritbot_gerrit as gerrit;
 
+use crate::state::User;
+
 pub const DEFAULT_FORMAT_SCRIPT: &str = include_str!("../../scripts/format.lua");
 const LUA_FORMAT_COMMENT_ADDED: &str = "format_comment_added";
 const LUA_FORMAT_REVIEWER_ADDED: &str = "format_reviewer_added";
@@ -150,6 +152,14 @@ impl Formatter {
         self.lua.context(|context| {
             Formatter::format_lua(context, LUA_FORMAT_REVIEWER_ADDED, event, identity)
         })
+    }
+
+    pub fn format_status(
+        &self,
+        user: Option<&User>,
+        other_enabled_user_count: usize,
+    ) -> Result<String, String> {
+        unimplemented!()
     }
 }
 
